@@ -161,6 +161,39 @@
                             </div>
                         </div>
 
+                        <!-- Pause Settings -->
+                        <div class="row mb-3">
+                            <div class="col-12">
+                                <h6 class="text-muted mb-2">
+                                    <i class="bi bi-pause-circle"></i> Pause Settings
+                                </h6>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="singlePauseMarker" class="form-label">Pause Marker:</label>
+                                <input type="text" class="form-control" id="singlePauseMarker" value="(pause)" placeholder="(pause)">
+                                <div class="form-text">Custom marker to insert pauses in text.</div>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="singlePauseDuration" class="form-label">Pause Duration:</label>
+                                <div class="input-group">
+                                    <input type="number" class="form-control" id="singlePauseDuration" min="0.1" max="10.0" step="0.1" value="1.0">
+                                    <span class="input-group-text">seconds</span>
+                                </div>
+                                <div class="form-text">Duration of silence to insert at pause markers.</div>
+                            </div>
+                        </div>
+
+                        <!-- Text Processing Info -->
+                        <div class="alert alert-info" role="alert">
+                            <strong><i class="bi bi-info-circle"></i> Text Processing Notes:</strong>
+                            <ul class="mb-0 mt-2">
+                                <li>Word-connecting hyphens (e.g., "mother-in-law") will be converted to spaces</li>
+                                <li>Standalone hyphens (e.g., "hello - world") are preserved for natural pauses</li>
+                                <li>Chunks smaller than 50 characters may cause processing issues</li>
+                                <li>Use your custom pause marker for precise timing control</li>
+                            </ul>
+                        </div>
+
                         <div class="d-grid gap-2">
                             <button class="btn btn-primary" id="singleGenerateBtn" {% if not model_loaded %}disabled{% endif %}>
                                 <i class="bi bi-play-circle"></i> Generate Speech
@@ -447,6 +480,8 @@
             formData.append('text', text);
             formData.append('max_chunk_size', document.getElementById('singleChunkSize').value);
             formData.append('generation_mode', document.getElementById('singleGenerationMode').value);
+            formData.append('pause_marker', document.getElementById('singlePauseMarker').value);
+            formData.append('pause_duration', document.getElementById('singlePauseDuration').value);
             
             startJob('generate_speech', formData, 'single');
         }

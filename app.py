@@ -99,11 +99,21 @@ def init_db():
         print("Adding queue_position column to jobs table")
         c.execute("ALTER TABLE jobs ADD COLUMN queue_position INTEGER")
     
+    # Check if pause_marker column exists, add it if it doesn't
+    if 'pause_marker' not in columns:
+        print("Adding pause_marker column to jobs table")
+        c.execute("ALTER TABLE jobs ADD COLUMN pause_marker TEXT DEFAULT '(pause)'")
+    
+    # Check if pause_duration column exists, add it if it doesn't  
+    if 'pause_duration' not in columns:
+        print("Adding pause_duration column to jobs table")
+        c.execute("ALTER TABLE jobs ADD COLUMN pause_duration REAL DEFAULT 1.0")
+    
     conn.commit()
     conn.close()
     print("Database initialized successfully")
 
-def save_job(job_id, job_type, status, reference_audio, output_files=None, error_message=None, queue_position=None):
+def save_job(job_id, job_type, status, reference_audio, output_files=None, error_message=None, queue_position=None, pause_marker=None, pause_duration=None):
     conn = sqlite3.connect(app.config['DATABASE'])
     c = conn.cursor()
     now = datetime.now().isoformat()
@@ -123,24 +133,28 @@ def save_job(job_id, job_type, status, reference_audio, output_files=None, error
             completed_at = ?,
             output_files = ?,
             error_message = ?,
-            queue_position = ?
+            queue_position = ?,
+            pause_marker = ?,
+            pause_duration = ?
             WHERE id = ?
-            ''', (status, completed_at, output_files_json, error_message, queue_position, job_id))
+            ''', (status, completed_at, output_files_json, error_message, queue_position, pause_marker, pause_duration, job_id))
         else:
             c.execute('''
             UPDATE jobs SET
             status = ?, 
             completed_at = ?,
             output_files = ?,
-            error_message = ?
+            error_message = ?,
+            pause_marker = ?,
+            pause_duration = ?
             WHERE id = ?
-            ''', (status, completed_at, output_files_json, error_message, job_id))
+            ''', (status, completed_at, output_files_json, error_message, pause_marker, pause_duration, job_id))
     else:
         c.execute('''
         INSERT INTO jobs 
-        (id, job_type, status, created_at, completed_at, reference_audio, output_files, error_message, queue_position) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (job_id, job_type, status, now, completed_at, reference_audio, output_files_json, error_message, queue_position))
+        (id, job_type, status, created_at, completed_at, reference_audio, output_files, error_message, queue_position, pause_marker, pause_duration) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (job_id, job_type, status, now, completed_at, reference_audio, output_files_json, error_message, queue_position, pause_marker, pause_duration))
     
     conn.commit()
     conn.close()
@@ -284,8 +298,10 @@ def add_to_queue(job_id, job_type, reference_audio, **kwargs):
     active_jobs[job_id]['queue_position'] = queue_position
     active_jobs[job_id]['status_message'] = f"Waiting in queue (position {queue_position})"
     
-    # Save to database
-    save_job(job_id, job_type, 'queued', reference_audio, queue_position=queue_position)
+    # Save to database with pause parameters
+    pause_marker = kwargs.get('pause_marker', '(pause)')
+    pause_duration = kwargs.get('pause_duration', 1.0)
+    save_job(job_id, job_type, 'queued', reference_audio, queue_position=queue_position, pause_marker=pause_marker, pause_duration=pause_duration)
     
     # Add to queue
     job_queue.put(job_info)
@@ -508,6 +524,9 @@ def expand_contractions(text):
 
 def preprocess_text(text):
     """Preprocess text to handle special cases like hyphenated words."""
+    # NEW: Handle hyphens first (convert word-connecting hyphens to spaces)
+    text = preprocess_hyphens_smart(text)
+    
     # Handle ellipses before expanding contractions
     # Replace ellipses with commas to indicate pauses
     text = re.sub(r'\.{3,}', ',', text)
@@ -644,6 +663,52 @@ def split_text_into_chunks(text, max_chunk_size):
             
     return valid_chunks
 
+def split_text_by_pauses(text, pause_marker='(pause)'):
+    """
+    Split text by pause markers and return segments with pause indicators
+    Returns: List of {'text': str, 'add_pause': bool}
+    """
+    if pause_marker not in text:
+        return [{'text': text, 'add_pause': False}]
+    
+    # Split by pause marker
+    segments = []
+    parts = text.split(pause_marker)
+    
+    for i, part in enumerate(parts):
+        part = part.strip()
+        if part:  # Skip empty parts
+            segments.append({
+                'text': part,
+                'add_pause': i < len(parts) - 1  # Add pause except for last segment
+            })
+    
+    return segments
+
+def create_silence_audio(duration_seconds, sample_rate=24000):
+    """Create silent audio tensor"""
+    num_samples = int(duration_seconds * sample_rate)
+    silence = torch.zeros(1, num_samples, dtype=torch.float32)
+    return silence
+
+def preprocess_hyphens_smart(text):
+    """
+    Convert word-connecting hyphens to spaces
+    Preserve standalone/spaced hyphens
+    
+    Examples:
+    - "mother-in-law" → "mother in law" (CONVERT)
+    - "long-term project" → "long term project" (CONVERT)  
+    - "hello - this is test" → "hello - this is test" (PRESERVE)
+    """
+    import re
+    
+    # Convert hyphens that are directly between words (no spaces)
+    # Pattern: word-word → word word
+    text = re.sub(r'(?<=\w)-(?=\w)', ' ', text)
+    
+    return text
+
 # Audio generation
 def process_chunk(tts_model, reference_audio, chunk, output_file, use_fast_mode):
     """Process a single text chunk into audio"""
@@ -662,7 +727,7 @@ def process_chunk(tts_model, reference_audio, chunk, output_file, use_fast_mode)
         return {'success': False, 'error': str(e)}
 
 # Background job processor for single text generation
-def process_single_text_job(job_id, reference_audio, text, max_chunk_size, use_fast_mode):
+def process_single_text_job(job_id, reference_audio, text, max_chunk_size, use_fast_mode, pause_marker='(pause)', pause_duration=1.0):
     try:
         # Update job status
         active_jobs[job_id]['status'] = 'processing'
@@ -670,33 +735,59 @@ def process_single_text_job(job_id, reference_audio, text, max_chunk_size, use_f
         active_jobs[job_id]['queue_position'] = 0  # No longer in queue
         save_job(job_id, 'single', 'processing', reference_audio, queue_position=0)
         
-        # Split text into chunks
-        chunks = split_text_into_chunks(text, max_chunk_size)
-        total_chunks = len(chunks)
+        # NEW: Split by pause markers first, then chunk within segments
+        pause_segments = split_text_by_pauses(text, pause_marker)
+        total_segments = len(pause_segments)
         
-        # Generate audio for each chunk
-        temp_files = []
-        success_count = 0
+        final_waveforms = []
+        sample_rate = None
         
-        for i, chunk in enumerate(chunks):
-            # Create temp file for audio chunk
-            temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            temp_file.close()
+        for segment_idx, segment in enumerate(pause_segments):
+            segment_text = segment['text']
+            add_pause = segment['add_pause']
             
-            # Process the chunk
-            result = process_chunk(tts, reference_audio, chunk, temp_file.name, use_fast_mode == 'fast')
+            # Split segment into chunks with user's max_chunk_size
+            chunks = split_text_into_chunks(segment_text, max_chunk_size)
             
-            if result['success']:
-                temp_files.append(temp_file.name)
-                success_count += 1
+            # Process all chunks in this segment
+            segment_waveforms = []
+            for chunk_idx, chunk in enumerate(chunks):
+                # Create temp file for audio chunk
+                temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+                temp_file.close()
                 
-            # Update progress
-            progress = int(((i+1) / total_chunks) * 100)
-            active_jobs[job_id]['progress'] = progress
-            active_jobs[job_id]['status_message'] = f"Processed chunk {i+1}/{total_chunks}"
+                # Process the chunk
+                result = process_chunk(tts, reference_audio, chunk, temp_file.name, use_fast_mode == 'fast')
+                
+                if result['success']:
+                    waveform, sr = torchaudio.load(temp_file.name)
+                    segment_waveforms.append(waveform)
+                    sample_rate = sr
+                    
+                    # Clean up temp file immediately
+                    try:
+                        os.remove(temp_file.name)
+                    except:
+                        pass
+                
+                # Update progress: (segment_progress + chunk_progress) / total_segments
+                chunk_progress = (chunk_idx + 1) / len(chunks)
+                overall_progress = int(((segment_idx + chunk_progress) / total_segments) * 100)
+                active_jobs[job_id]['progress'] = overall_progress
+                active_jobs[job_id]['status_message'] = f"Segment {segment_idx+1}/{total_segments}, Chunk {chunk_idx+1}/{len(chunks)}"
             
-        # Concatenate chunks if we have at least one
-        if temp_files:
+            # Concatenate all chunks in this segment
+            if segment_waveforms:
+                segment_audio = torch.cat(segment_waveforms, dim=1)
+                final_waveforms.append(segment_audio)
+                
+                # Add pause after segment if needed
+                if add_pause:
+                    silence = create_silence_audio(pause_duration, sample_rate)
+                    final_waveforms.append(silence)
+        
+        # Final concatenation and output
+        if final_waveforms:
             # Create output filename based on the reference audio filename
             reference_basename = os.path.splitext(os.path.basename(reference_audio))[0]
             # Remove UUID prefix if present from uploaded files
@@ -707,33 +798,9 @@ def process_single_text_job(job_id, reference_audio, text, max_chunk_size, use_f
             output_filename = f"{reference_basename}_output_{timestamp}.wav"
             output_file = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
             
-            # Concatenate audio files
-            if len(temp_files) == 1:
-                # If only one chunk, just copy the file
-                waveform, sample_rate = torchaudio.load(temp_files[0])
-                torchaudio.save(output_file, waveform, sample_rate)
-            else:
-                # If multiple chunks, concatenate them
-                waveforms = []
-                sample_rate = None
-                
-                for file in temp_files:
-                    waveform, sr = torchaudio.load(file)
-                    waveforms.append(waveform)
-                    sample_rate = sr
-                
-                # Concatenate all waveforms
-                concatenated = torch.cat(waveforms, dim=1)
-                
-                # Save the concatenated audio
-                torchaudio.save(output_file, concatenated, sample_rate)
-            
-            # Clean up temp files
-            for file in temp_files:
-                try:
-                    os.remove(file)
-                except:
-                    pass
+            # Concatenate all final waveforms (segments + pauses)
+            final_audio = torch.cat(final_waveforms, dim=1)
+            torchaudio.save(output_file, final_audio, sample_rate)
                     
             # Update job status as complete
             active_jobs[job_id]['status'] = 'completed'
@@ -1004,11 +1071,22 @@ def generate_speech():
     max_chunk_size = int(data.get('max_chunk_size', 250))
     use_fast_mode = data.get('generation_mode', 'fast')
     
+    # NEW: Get pause parameters from form data
+    pause_marker = data.get('pause_marker', '(pause)')
+    pause_duration = float(data.get('pause_duration', 1.0))
+    
     if not os.path.exists(reference_audio):
         return jsonify({'success': False, 'error': 'Reference audio file does not exist'})
         
     if not text.strip():
         return jsonify({'success': False, 'error': 'No text provided'})
+    
+    # Validate pause parameters
+    if not (0.1 <= pause_duration <= 10.0):
+        return jsonify({'success': False, 'error': 'Pause duration must be between 0.1 and 10.0 seconds'})
+    
+    if max_chunk_size < 50:
+        return jsonify({'success': False, 'error': 'Chunk size should be at least 50 characters for better processing'})
     
     # Create job ID and initialize job tracking
     job_id = str(uuid.uuid4())
@@ -1032,7 +1110,7 @@ def generate_speech():
     save_job(job_id, 'single', 'queued', reference_audio, queue_position=queue_position)
     
     # Add job to processing queue
-    add_to_queue(job_id, 'single', reference_audio, text=text, max_chunk_size=max_chunk_size, use_fast_mode=use_fast_mode)
+    add_to_queue(job_id, 'single', reference_audio, text=text, max_chunk_size=max_chunk_size, use_fast_mode=use_fast_mode, pause_marker=pause_marker, pause_duration=pause_duration)
     
     return jsonify({
         'success': True,
