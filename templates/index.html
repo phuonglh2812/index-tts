@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IndexTTS Voice Generator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.3/font/bootstrap-icons.css">
+    <style>
+        body {
+            background-color: #f8f9fa;
+            padding-bottom: 30px;
+        }
+        .header {
+            background-color: #343a40;
+            color: white;
+            padding: 20px 0;
+            margin-bottom: 30px;
+        }
+        .card {
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            border: none;
+        }
+        .card-header {
+            font-weight: bold;
+            background-color: #007bff;
+            color: white;
+        }
+        .btn-primary {
+            background-color: #007bff;
+            border-color: #007bff;
+        }
+        .btn-primary:hover {
+            background-color: #0069d9;
+            border-color: #0062cc;
+        }
+        .nav-tabs .nav-link.active {
+            font-weight: bold;
+            border-top: 3px solid #007bff;
+        }
+        .progress {
+            height: 25px;
+        }
+        .upload-area {
+            border: 2px dashed #ddd;
+            border-radius: 5px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 15px;
+            transition: all 0.3s;
+        }
+        .upload-area:hover, .upload-area.dragover {
+            border-color: #007bff;
+            background-color: #f0f9ff;
+        }
+        #referenceFileName, .text-file-item {
+            margin-top: 10px;
+            padding: 5px 10px;
+            background: #e9ecef;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .job-card {
+            transition: all 0.3s;
+        }
+        .job-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header text-center">
+        <div class="container">
+            <h1>IndexTTS Voice Generator</h1>
+            <p class="lead">Generate natural-sounding speech with zero-shot voice cloning</p>
+            <div class="btn-group" role="group">
+                <a href="/" class="btn btn-outline-light active">Home</a>
+                <a href="/history" class="btn btn-outline-light">Job History</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="container">
+        {% if not model_loaded %}
+        <div class="alert alert-danger mb-4" role="alert">
+            <i class="bi bi-exclamation-triangle-fill"></i> 
+            <strong>Error:</strong> TTS model is not loaded. Please check server logs for details.
+        </div>
+        {% endif %}
+
+        {% if queue_length > 0 %}
+        <div class="alert alert-info mb-4" role="alert">
+            <i class="bi bi-info-circle-fill"></i> 
+            <strong>System busy:</strong> There {% if queue_length == 1 %}is 1 job{% else %}are {{ queue_length }} jobs{% endif %} waiting in the queue. Your job will be processed in order.
+        </div>
+        {% endif %}
+
+        <!-- Reference Audio Upload Section -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-music-note-beamed"></i> Step 1: Upload Reference Voice
+            </div>
+            <div class="card-body">
+                <p>Upload a short WAV file (5-10 seconds) with a clear voice sample to clone:</p>
+                <div class="upload-area" id="referenceUpload">
+                    <i class="bi bi-cloud-arrow-up fs-3"></i>
+                    <p>Drag & drop your reference audio file here or click to browse</p>
+                    <input type="file" id="referenceFile" class="d-none" accept=".wav">
+                    <button class="btn btn-outline-primary btn-sm" id="browseBtnReference">Browse Files</button>
+                </div>
+                <div id="referenceFileName" class="d-none"></div>
+            </div>
+        </div>
+
+        <!-- Tabs for Single/Batch Processing -->
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-soundwave"></i> Step 2: Generate Speech
+            </div>
+            <div class="card-body">
+                <ul class="nav nav-tabs" id="processingTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="single-tab" data-bs-toggle="tab" data-bs-target="#single-content" type="button" role="tab">
+                            <i class="bi bi-file-text"></i> Single Text
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="batch-tab" data-bs-toggle="tab" data-bs-target="#batch-content" type="button" role="tab">
+                            <i class="bi bi-files"></i> Batch Processing
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content p-3" id="processingTabsContent">
+                    <!-- Single Text Processing Tab -->
+                    <div class="tab-pane fade show active" id="single-content" role="tabpanel">
+                        <div class="mb-3">
+                            <label for="textInput" class="form-label">Text to Speak:</label>
+                            <textarea class="form-control" id="textInput" rows="6" placeholder="Enter the text you want to convert to speech..."></textarea>
+                        </div>
+
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="singleChunkSize" class="form-label">Max Chunk Size:</label>
+                                <div class="input-group">
+                                    <input type="number" class="form-control" id="singleChunkSize" min="50" max="500" value="250">
+                                    <span class="input-group-text">characters</span>
+                                </div>
+                                <div class="form-text">Smaller chunks process faster but may have more seams.</div>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="singleGenerationMode" class="form-label">Generation Mode:</label>
+                                <select class="form-select" id="singleGenerationMode">
+                                    <option value="fast">Fast Mode (Better Performance)</option>
+                                    <option value="standard">Standard Mode (Higher Quality)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="d-grid gap-2">
+                            <button class="btn btn-primary" id="singleGenerateBtn" {% if not model_loaded %}disabled{% endif %}>
+                                <i class="bi bi-play-circle"></i> Generate Speech
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Batch Processing Tab -->
+                    <div class="tab-pane fade" id="batch-content" role="tabpanel">
+                        <div class="mb-3">
+                            <label class="form-label">Upload Text Files:</label>
+                            <div class="upload-area" id="textFilesUpload">
+                                <i class="bi bi-file-earmark-text fs-3"></i>
+                                <p>Drag & drop your .txt files here or click to browse</p>
+                                <input type="file" id="textFiles" class="d-none" accept=".txt" multiple>
+                                <button class="btn btn-outline-primary btn-sm" id="browseBtnText">Browse Files</button>
+                            </div>
+                            <div id="textFilesList" class="mt-2"></div>
+                        </div>
+
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="batchChunkSize" class="form-label">Max Chunk Size:</label>
+                                <div class="input-group">
+                                    <input type="number" class="form-control" id="batchChunkSize" min="50" max="500" value="250">
+                                    <span class="input-group-text">characters</span>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="batchGenerationMode" class="form-label">Generation Mode:</label>
+                                <select class="form-select" id="batchGenerationMode">
+                                    <option value="fast">Fast Mode (Better Performance)</option>
+                                    <option value="standard">Standard Mode (Higher Quality)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="d-grid gap-2">
+                            <button class="btn btn-primary" id="batchProcessBtn" {% if not model_loaded %}disabled{% endif %}>
+                                <i class="bi bi-play-circle"></i> Start Batch Processing
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Job Status Section (initially hidden) -->
+        <div class="card mt-4 d-none" id="jobStatusCard">
+            <div class="card-header">
+                <i class="bi bi-activity"></i> Job Status
+                <button type="button" class="btn-close float-end" id="closeJobStatus"></button>
+            </div>
+            <div class="card-body">
+                <h5 class="card-title" id="jobTitle">Processing your request...</h5>
+                
+                <div id="queueStatus" class="alert alert-info d-none mb-3">
+                    <i class="bi bi-hourglass-split"></i> 
+                    <span id="queueMessage">Waiting in queue...</span>
+                </div>
+                
+                <div class="mb-3">
+                    <label class="form-label">Overall Progress:</label>
+                    <div class="progress">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="jobProgress" role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+                
+                <div class="mb-3 d-none" id="fileProgressContainer">
+                    <label class="form-label">Current File Progress:</label>
+                    <div class="progress">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-success" id="fileProgress" role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+                
+                <p id="jobStatus" class="mb-3">Job started...</p>
+                
+                <div id="jobResults" class="d-none">
+                    <h6>Generated Files:</h6>
+                    <ul id="outputFilesList" class="list-group"></ul>
+                </div>
+                
+                <div class="mt-3">
+                    <a href="/history" class="btn btn-outline-secondary">View All Jobs</a>
+                    <button class="btn btn-primary d-none" id="viewJobDetailsBtn">View Details</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Jobs Section -->
+        <div class="card mt-4" id="recentJobsCard">
+            <div class="card-header">
+                <i class="bi bi-clock-history"></i> Recent Jobs
+            </div>
+            <div class="card-body">
+                <div id="recentJobsList" class="row">
+                    <p class="text-center" id="noJobsMessage">No recent jobs. Start generating speech to see them here!</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Global variables
+        let referenceAudioPath = '';
+        let textFilePaths = [];
+        let currentJobId = null;
+        let jobCheckInterval = null;
+        let queueCheckInterval = null;
+
+        // DOM ready
+        document.addEventListener('DOMContentLoaded', function() {
+            // File upload functionality
+            setupReferenceUpload();
+            setupTextFilesUpload();
+            
+            // Button handlers
+            document.getElementById('singleGenerateBtn').addEventListener('click', generateSingleSpeech);
+            document.getElementById('batchProcessBtn').addEventListener('click', startBatchProcessing);
+            document.getElementById('closeJobStatus').addEventListener('click', hideJobStatus);
+            
+            // Load recent jobs on page load
+            loadRecentJobs();
+        });
+
+        // Reference audio upload handling
+        function setupReferenceUpload() {
+            const uploadArea = document.getElementById('referenceUpload');
+            const fileInput = document.getElementById('referenceFile');
+            const browseBtn = document.getElementById('browseBtnReference');
+            const fileNameDisplay = document.getElementById('referenceFileName');
+            
+            browseBtn.addEventListener('click', () => fileInput.click());
+            
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+            
+            uploadArea.addEventListener('dragleave', () => {
+                uploadArea.classList.remove('dragover');
+            });
+            
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                
+                if (e.dataTransfer.files.length) {
+                    handleReferenceFile(e.dataTransfer.files[0]);
+                }
+            });
+            
+            fileInput.addEventListener('change', () => {
+                if (fileInput.files.length) {
+                    handleReferenceFile(fileInput.files[0]);
+                }
+            });
+        }
+        
+        function handleReferenceFile(file) {
+            if (!file.name.toLowerCase().endsWith('.wav')) {
+                alert('Please select a WAV file for the reference voice.');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('reference', file);
+            
+            fetch('/api/upload_reference', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    referenceAudioPath = data.file_path;
+                    const fileNameDisplay = document.getElementById('referenceFileName');
+                    fileNameDisplay.textContent = file.name;
+                    fileNameDisplay.classList.remove('d-none');
+                    document.getElementById('referenceUpload').classList.add('d-none');
+                } else {
+                    alert('Error uploading reference audio: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error uploading file. Please try again.');
+            });
+        }
+
+        // Text files upload handling
+        function setupTextFilesUpload() {
+            const uploadArea = document.getElementById('textFilesUpload');
+            const fileInput = document.getElementById('textFiles');
+            const browseBtn = document.getElementById('browseBtnText');
+            
+            browseBtn.addEventListener('click', () => fileInput.click());
+            
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+            
+            uploadArea.addEventListener('dragleave', () => {
+                uploadArea.classList.remove('dragover');
+            });
+            
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                
+                if (e.dataTransfer.files.length) {
+                    handleTextFiles(e.dataTransfer.files);
+                }
+            });
+            
+            fileInput.addEventListener('change', () => {
+                if (fileInput.files.length) {
+                    handleTextFiles(fileInput.files);
+                }
+            });
+        }
+        
+        function handleTextFiles(files) {
+            const formData = new FormData();
+            for (let i = 0; i < files.length; i++) {
+                formData.append('text_files', files[i]);
+            }
+            
+            fetch('/api/upload_text_files', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Add new files to our list
+                    data.files.forEach(file => {
+                        if (!textFilePaths.includes(file.file_path)) {
+                            textFilePaths.push(file.file_path);
+                            
+                            const fileItem = document.createElement('div');
+                            fileItem.className = 'text-file-item mb-2 d-flex justify-content-between align-items-center';
+                            fileItem.innerHTML = `
+                                <span><i class="bi bi-file-text"></i> ${file.filename.split('_').slice(1).join('_')}</span>
+                                <button class="btn btn-sm btn-outline-danger remove-file" data-path="${file.file_path}">
+                                    <i class="bi bi-x"></i>
+                                </button>
+                            `;
+                            
+                            document.getElementById('textFilesList').appendChild(fileItem);
+                            
+                            // Add remove handler
+                            fileItem.querySelector('.remove-file').addEventListener('click', function() {
+                                const path = this.getAttribute('data-path');
+                                textFilePaths = textFilePaths.filter(p => p !== path);
+                                this.parentElement.remove();
+                            });
+                        }
+                    });
+                } else {
+                    alert('Error uploading text files: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error uploading files. Please try again.');
+            });
+        }
+
+        // Generate single speech
+        function generateSingleSpeech() {
+            if (!validateReferenceAudio()) return;
+            
+            const text = document.getElementById('textInput').value.trim();
+            if (!text) {
+                alert('Please enter some text to generate speech.');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('reference_audio', referenceAudioPath);
+            formData.append('text', text);
+            formData.append('max_chunk_size', document.getElementById('singleChunkSize').value);
+            formData.append('generation_mode', document.getElementById('singleGenerationMode').value);
+            
+            startJob('generate_speech', formData, 'single');
+        }
+
+        // Start batch processing
+        function startBatchProcessing() {
+            if (!validateReferenceAudio()) return;
+            
+            if (textFilePaths.length === 0) {
+                alert('Please upload at least one text file for batch processing.');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('reference_audio', referenceAudioPath);
+            formData.append('text_files', JSON.stringify(textFilePaths));
+            formData.append('max_chunk_size', document.getElementById('batchChunkSize').value);
+            formData.append('generation_mode', document.getElementById('batchGenerationMode').value);
+            
+            startJob('batch_process', formData, 'batch');
+        }
+
+        // Validate reference audio
+        function validateReferenceAudio() {
+            if (!referenceAudioPath) {
+                alert('Please upload a reference audio file first.');
+                return false;
+            }
+            return true;
+        }
+
+        // Start a job (common function for both single and batch)
+        function startJob(endpoint, formData, jobType) {
+            document.getElementById('jobTitle').textContent = 
+                jobType === 'single' ? 'Generating Speech' : 'Batch Processing';
+            
+            document.getElementById('jobProgress').style.width = '0%';
+            document.getElementById('jobProgress').setAttribute('aria-valuenow', '0');
+            document.getElementById('jobStatus').textContent = 'Starting job...';
+            
+            document.getElementById('outputFilesList').innerHTML = '';
+            document.getElementById('jobResults').classList.add('d-none');
+            
+            // Show file progress bar only for batch jobs
+            if (jobType === 'batch') {
+                document.getElementById('fileProgressContainer').classList.remove('d-none');
+                document.getElementById('fileProgress').style.width = '0%';
+            } else {
+                document.getElementById('fileProgressContainer').classList.add('d-none');
+            }
+            
+            // Show job status card
+            document.getElementById('jobStatusCard').classList.remove('d-none');
+            document.getElementById('viewJobDetailsBtn').classList.add('d-none');
+            
+            // Hide queue status initially
+            document.getElementById('queueStatus').classList.add('d-none');
+            
+            // Submit job
+            fetch(`/api/${endpoint}`, {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    currentJobId = data.job_id;
+                    document.getElementById('jobStatus').textContent = data.message;
+                    
+                    // Show queue info if job is queued
+                    if (data.queue_position && data.queue_position > 0) {
+                        showQueueStatus(data.queue_position);
+                    }
+                    
+                    // Start polling for job status
+                    if (jobCheckInterval) clearInterval(jobCheckInterval);
+                    jobCheckInterval = setInterval(checkJobStatus, 1000);
+                } else {
+                    document.getElementById('jobStatus').textContent = 'Error: ' + data.error;
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById('jobStatus').textContent = 'Error submitting job';
+            });
+        }
+
+        // Show queue status in the job card
+        function showQueueStatus(position) {
+            const queueStatus = document.getElementById('queueStatus');
+            const queueMessage = document.getElementById('queueMessage');
+            
+            queueMessage.textContent = `Waiting in queue (position ${position})`;
+            queueStatus.classList.remove('d-none');
+            
+            // Start queue check interval if not already running
+            if (!queueCheckInterval) {
+                queueCheckInterval = setInterval(checkQueueStatus, 5000);
+            }
+        }
+        
+        // Hide queue status
+        function hideQueueStatus() {
+            document.getElementById('queueStatus').classList.add('d-none');
+            
+            // Stop queue check interval
+            if (queueCheckInterval) {
+                clearInterval(queueCheckInterval);
+                queueCheckInterval = null;
+            }
+        }
+        
+        // Check queue status
+        function checkQueueStatus() {
+            fetch('/api/queue_status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // If our job is next, update status
+                        if (data.next_job_id === currentJobId) {
+                            document.getElementById('queueMessage').textContent = 
+                                'Your job is next in line and will start soon...';
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('Error checking queue status:', error);
+                });
+        }
+
+        // Check job status
+        function checkJobStatus() {
+            if (!currentJobId) return;
+            
+            fetch(`/api/job/${currentJobId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const job = data.job;
+                    
+                    // Update queue status if job is queued
+                    if (job.status === 'queued' && job.queue_position > 0) {
+                        showQueueStatus(job.queue_position);
+                    } else {
+                        hideQueueStatus();
+                    }
+                    
+                    // Update progress
+                    document.getElementById('jobProgress').style.width = job.progress + '%';
+                    document.getElementById('jobProgress').setAttribute('aria-valuenow', job.progress);
+                    
+                    // Update status message
+                    if (job.status_message) {
+                        document.getElementById('jobStatus').textContent = job.status_message;
+                    }
+                    
+                    // Update file progress for batch jobs
+                    if (job.file_progress !== undefined) {
+                        document.getElementById('fileProgress').style.width = job.file_progress + '%';
+                        document.getElementById('fileProgress').setAttribute('aria-valuenow', job.file_progress);
+                    }
+                    
+                    // Handle completed job
+                    if (job.status === 'completed') {
+                        clearInterval(jobCheckInterval);
+                        jobCheckInterval = null;
+                        jobCompleted(job);
+                    }
+                    
+                    // Handle failed job
+                    if (job.status === 'failed') {
+                        clearInterval(jobCheckInterval);
+                        jobCheckInterval = null;
+                        jobFailed(job);
+                    }
+                } else {
+                    console.error('Error checking job status:', data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+        }
+
+        // Handle completed job
+        function jobCompleted(job) {
+            document.getElementById('jobProgress').classList.remove('progress-bar-animated');
+            
+            // Show output files
+            const outputList = document.getElementById('outputFilesList');
+            outputList.innerHTML = '';
+            
+            if (job.output_files && job.output_files.length > 0) {
+                job.output_files.forEach(file => {
+                    // For database jobs, file is just a name
+                    // For active jobs, file might be a full path
+                    const fileName = file.includes('/') ? file.split('/').pop() : file;
+                    
+                    const li = document.createElement('li');
+                    li.className = 'list-group-item d-flex justify-content-between align-items-center';
+                    li.innerHTML = `
+                        <span><i class="bi bi-file-earmark-music"></i> ${fileName}</span>
+                        <div>
+                            <a href="/download/${fileName}" class="btn btn-sm btn-primary">
+                                <i class="bi bi-download"></i> Download
+                            </a>
+                        </div>
+                    `;
+                    outputList.appendChild(li);
+                });
+                
+                document.getElementById('jobResults').classList.remove('d-none');
+            }
+            
+            document.getElementById('viewJobDetailsBtn').classList.remove('d-none');
+            document.getElementById('viewJobDetailsBtn').addEventListener('click', () => {
+                window.location.href = `/job/${job.id}`;
+            });
+            
+            // Reload recent jobs
+            loadRecentJobs();
+        }
+
+        // Handle failed job
+        function jobFailed(job) {
+            document.getElementById('jobProgress').classList.remove('progress-bar-animated');
+            document.getElementById('jobProgress').classList.remove('bg-primary');
+            document.getElementById('jobProgress').classList.add('bg-danger');
+            
+            document.getElementById('jobStatus').innerHTML = 
+                `<div class="alert alert-danger">Job failed: ${job.error_message || job.status_message || 'Unknown error'}</div>`;
+            
+            document.getElementById('viewJobDetailsBtn').classList.remove('d-none');
+            document.getElementById('viewJobDetailsBtn').addEventListener('click', () => {
+                window.location.href = `/job/${job.id}`;
+            });
+            
+            // Reload recent jobs
+            loadRecentJobs();
+        }
+
+        // Hide job status card
+        function hideJobStatus() {
+            document.getElementById('jobStatusCard').classList.add('d-none');
+            
+            // Clear intervals
+            if (jobCheckInterval) {
+                clearInterval(jobCheckInterval);
+                jobCheckInterval = null;
+            }
+            
+            if (queueCheckInterval) {
+                clearInterval(queueCheckInterval);
+                queueCheckInterval = null;
+            }
+        }
+
+        // Load recent jobs
+        function loadRecentJobs() {
+            fetch('/api/job/recent')
+            .then(response => response.json())
+            .then(data => {
+                const recentJobsList = document.getElementById('recentJobsList');
+                const noJobsMessage = document.getElementById('noJobsMessage');
+                
+                if (data.success && data.jobs.length > 0) {
+                    noJobsMessage.classList.add('d-none');
+                    recentJobsList.innerHTML = '';
+                    
+                    data.jobs.slice(0, 4).forEach(job => {
+                        const jobCard = document.createElement('div');
+                        jobCard.className = 'col-md-6 col-lg-3 mb-3';
+                        jobCard.innerHTML = `
+                            <div class="card h-100 job-card">
+                                <div class="card-body">
+                                    <h6 class="card-title">
+                                        ${job.job_type === 'single' ? 
+                                          '<i class="bi bi-file-text"></i> Single Text' : 
+                                          '<i class="bi bi-files"></i> Batch Job'}
+                                    </h6>
+                                    <p class="card-text small">
+                                        ${new Date(job.created_at).toLocaleString()}
+                                    </p>
+                                    <div class="d-grid">
+                                        <a href="/job/${job.id}" class="btn btn-sm btn-outline-primary">View Details</a>
+                                    </div>
+                                </div>
+                                <div class="card-footer text-center bg-transparent">
+                                    <span class="badge ${getStatusBadgeClass(job.status)}">
+                                        ${job.status}
+                                    </span>
+                                </div>
+                            </div>
+                        `;
+                        recentJobsList.appendChild(jobCard);
+                    });
+                } else {
+                    noJobsMessage.classList.remove('d-none');
+                }
+            })
+            .catch(error => {
+                console.error('Error loading recent jobs:', error);
+            });
+        }
+
+        function getStatusBadgeClass(status) {
+            switch(status) {
+                case 'completed': return 'bg-success';
+                case 'failed': return 'bg-danger';
+                case 'processing': return 'bg-primary';
+                default: return 'bg-secondary';
+            }
+        }
+    </script>
+</body>
+</html> 
